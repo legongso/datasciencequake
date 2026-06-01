@@ -317,17 +317,14 @@ body { margin: 0; padding: 0; background: transparent; color: #fff; }
     transform: translateX(18px);
 }
 
-
-    margin-top: 18px;
+/* Result */
+.result-block {
+    margin-top: 16px;
     padding: 18px 16px;
     background: rgba(255,255,255,0.025);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 14px;
     text-align: center;
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
 }
 .result-block.has-result { border-color: rgba(255,255,255,0.12); }
 .r-label {
@@ -497,6 +494,16 @@ var CLUSTER_COLOR = ['#ffd166', '#6bcf9f', '#ff6b6b'];
 // 위험 레벨 → CLUSTER_INFO 인덱스 (0=중간, 1=낮음, 2=높음)
 var LEVEL_TO_INFO = { low: 1, mid: 0, high: 2 };
 
+// 지진 데이터를 GeoJSON으로 변환 (색상을 미리 계산해 넣어 match 타입 이슈 제거)
+var features = POINTS.map(function(p) {
+    var c = Math.round(p[2]);
+    return {
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [p[1], p[0]] }, // [lon, lat]
+        properties: { cluster: c, color: CLUSTER_COLOR[c] || '#aaa' }
+    };
+});
+
 // MapLibre 초기화 - CartoDB Dark Matter (라벨 적은 다크 베이스맵)
 var map = new maplibregl.Map({
     container: 'map',
@@ -513,13 +520,37 @@ var map = new maplibregl.Map({
                 ],
                 tileSize: 256,
                 attribution: '© OpenStreetMap contributors © CARTO'
+            },
+            // 지진 데이터를 스타일에 직접 포함 → load 타이밍과 무관하게 항상 렌더링
+            'quakes': {
+                type: 'geojson',
+                data: { type: 'FeatureCollection', features: features }
             }
         },
-        layers: [{
-            id: 'carto-dark-layer',
-            type: 'raster',
-            source: 'carto-dark'
-        }]
+        layers: [
+            { id: 'carto-dark-layer', type: 'raster', source: 'carto-dark' },
+            // 글로우 후광
+            {
+                id: 'quakes-glow', type: 'circle', source: 'quakes',
+                paint: {
+                    'circle-radius': ['interpolate', ['linear'], ['zoom'], 1, 6, 4, 14, 7, 26],
+                    'circle-color': ['get', 'color'],
+                    'circle-opacity': 0.22,
+                    'circle-blur': 1.0
+                }
+            },
+            // 메인 도트
+            {
+                id: 'quakes-core', type: 'circle', source: 'quakes',
+                paint: {
+                    'circle-radius': ['interpolate', ['linear'], ['zoom'], 1, 3, 4, 5, 7, 7],
+                    'circle-color': ['get', 'color'],
+                    'circle-opacity': 0.95,
+                    'circle-stroke-width': 0.6,
+                    'circle-stroke-color': 'rgba(255,255,255,0.6)'
+                }
+            }
+        ]
     },
     center: [20, 15],
     zoom: 1.4,
@@ -529,64 +560,6 @@ var map = new maplibregl.Map({
 });
 
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
-
-// 지진 데이터를 GeoJSON으로 변환 (색상을 미리 계산해 넣어 match 타입 이슈 제거)
-var features = POINTS.map(function(p) {
-    var c = Math.round(p[2]);  // 혹시 모를 float 방어
-    return {
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: [p[1], p[0]] }, // [lon, lat]
-        properties: { cluster: c, color: CLUSTER_COLOR[c] || '#aaa' }
-    };
-});
-
-function addQuakeLayers() {
-    if (map.getSource('quakes')) return;  // 중복 방지
-    map.addSource('quakes', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: features }
-    });
-
-    // 글로우 후광 레이어
-    map.addLayer({
-        id: 'quakes-glow',
-        type: 'circle',
-        source: 'quakes',
-        paint: {
-            'circle-radius': [
-                'interpolate', ['linear'], ['zoom'],
-                1, 6, 4, 14, 7, 26
-            ],
-            'circle-color': ['get', 'color'],
-            'circle-opacity': 0.22,
-            'circle-blur': 1.0
-        }
-    });
-
-    // 메인 도트 레이어
-    map.addLayer({
-        id: 'quakes-core',
-        type: 'circle',
-        source: 'quakes',
-        paint: {
-            'circle-radius': [
-                'interpolate', ['linear'], ['zoom'],
-                1, 3, 4, 5, 7, 7
-            ],
-            'circle-color': ['get', 'color'],
-            'circle-opacity': 0.95,
-            'circle-stroke-width': 0.6,
-            'circle-stroke-color': 'rgba(255,255,255,0.6)'
-        }
-    });
-}
-
-// 스타일이 이미 로드됐으면 즉시, 아니면 load 시점에 추가 (둘 다 대비)
-if (map.isStyleLoaded()) {
-    addQuakeLayers();
-} else {
-    map.on('load', addQuakeLayers);
-}
 
 // 사용자 마커
 var userMarker = null;
@@ -682,24 +655,18 @@ map.on('load', function() {
     setTimeout(function() { placeUserMarker(35.6, 139.7); }, 400);
 });
 
-// 실제 지진 데이터 표시 토글
+// 실제 지진 데이터 표시 토글 (레이어는 style에 항상 존재)
 (function() {
     var btn = document.getElementById('quake-toggle');
     var visible = true;
-    function apply() {
+    btn.addEventListener('click', function() {
+        visible = !visible;
         var vis = visible ? 'visible' : 'none';
         ['quakes-glow', 'quakes-core'].forEach(function(id) {
             if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
         });
         btn.setAttribute('aria-checked', visible ? 'true' : 'false');
-    }
-    btn.addEventListener('click', function() {
-        visible = !visible;
-        apply();
     });
-    // 레이어가 로드된 뒤 초기 상태 동기화
-    if (map.isStyleLoaded()) { setTimeout(apply, 100); }
-    else { map.on('load', function() { setTimeout(apply, 100); }); }
 })();
 </script>
 
