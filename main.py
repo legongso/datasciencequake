@@ -553,40 +553,66 @@ function resizeCanvas() {
     qCtx.setTransform(dpr, 0, 0, dpr, 0, 0); // CSS 픽셀 좌표로 그리기
 }
 
+var GRID = 34;  // 화면 픽셀 격자 크기 — 줌아웃 시 같은 칸의 점들을 하나로 묶음(클러스터)
+
 function drawQuakes() {
     var w = mapEl.clientWidth, h = mapEl.clientHeight;
     qCtx.clearRect(0, 0, w, h);
     if (!quakesVisible) return;
 
     var z = map.getZoom();
-    // 줌인할수록 점이 커지고 더 퍼져 보이게: 코어 반경 & 글로우 반경 확대
-    var coreR = 1.6 + Math.max(0, z - 1) * 1.4;   // z=1 → 1.6px, z=8 → 11.4px
-    var glowR = coreR * 2.6;
-    var margin = glowR + 4;
+    var b = map.getBounds();
+    var west = b.getWest() - 2, east = b.getEast() + 2,
+        south = b.getSouth() - 2, north = b.getNorth() + 2;
 
+    // 화면 픽셀 격자에 점들을 집계 → 그릴 개수를 칸 수(수백개)로 제한
+    var cells = {};
     for (var i = 0; i < POINTS.length; i++) {
-        var lat = POINTS[i][0], lon = POINTS[i][1], c = Math.round(POINTS[i][2]);
+        var lat = POINTS[i][0], lon = POINTS[i][1];
+        if (lon < west || lon > east || lat < south || lat > north) continue; // 지오 컬링(투영 전, 저렴)
         var pt = map.project([lon, lat]);
-        if (pt.x < -margin || pt.x > w + margin || pt.y < -margin || pt.y > h + margin) continue; // 화면 밖 컬링
-        var color = CLUSTER_COLOR[c] || '#aaa';
+        if (pt.x < -40 || pt.x > w + 40 || pt.y < -40 || pt.y > h + 40) continue;
+        var key = (Math.floor(pt.x / GRID)) + '_' + (Math.floor(pt.y / GRID));
+        var cell = cells[key];
+        if (!cell) cell = cells[key] = { sx: 0, sy: 0, n: 0, c0: 0, c1: 0, c2: 0 };
+        cell.sx += pt.x; cell.sy += pt.y; cell.n++;
+        var c = POINTS[i][2] | 0;
+        if (c === 2) cell.c2++; else if (c === 0) cell.c0++; else cell.c1++;
+    }
 
-        // 글로우
-        var g = qCtx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, glowR);
-        g.addColorStop(0, hexToRgba(color, 0.35));
-        g.addColorStop(1, hexToRgba(color, 0));
-        qCtx.fillStyle = g;
+    var baseR = 2 + Math.max(0, z - 1) * 0.9;  // 줌인할수록 점 커짐
+    for (var k in cells) {
+        var cl = cells[k];
+        var x = cl.sx / cl.n, y = cl.sy / cl.n;
+        // 대표 색: 최다 군집 (동률이면 높은 위험 우선)
+        var dom = (cl.c2 >= cl.c1 && cl.c2 >= cl.c0) ? 2 : (cl.c0 >= cl.c1 ? 0 : 1);
+        var color = CLUSTER_COLOR[dom];
+        var r = baseR + Math.sqrt(cl.n - 1) * 2.2;  // 점 많을수록 큰 원
+        if (r > 26) r = 26;
+
+        // 저렴한 글로우 (단색 반투명 원)
         qCtx.beginPath();
-        qCtx.arc(pt.x, pt.y, glowR, 0, Math.PI * 2);
+        qCtx.arc(x, y, r * 1.9, 0, 6.283185);
+        qCtx.fillStyle = hexToRgba(color, 0.16);
         qCtx.fill();
 
-        // 코어 도트
+        // 코어
         qCtx.beginPath();
-        qCtx.arc(pt.x, pt.y, coreR, 0, Math.PI * 2);
+        qCtx.arc(x, y, r, 0, 6.283185);
         qCtx.fillStyle = color;
         qCtx.fill();
-        qCtx.lineWidth = Math.max(0.5, coreR * 0.18);
-        qCtx.strokeStyle = 'rgba(255,255,255,0.55)';
+        qCtx.lineWidth = 0.6;
+        qCtx.strokeStyle = 'rgba(255,255,255,0.5)';
         qCtx.stroke();
+
+        // 묶인 개수 표시 (클러스터가 충분히 클 때만)
+        if (cl.n > 1 && r >= 9) {
+            qCtx.fillStyle = 'rgba(8,10,14,0.92)';
+            qCtx.font = 'bold ' + Math.round(r * 0.85) + 'px Inter, sans-serif';
+            qCtx.textAlign = 'center';
+            qCtx.textBaseline = 'middle';
+            qCtx.fillText(cl.n, x, y);
+        }
     }
 }
 
@@ -595,9 +621,18 @@ function hexToRgba(hex, a) {
     return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
 }
 
-// 지도 움직임/줌마다 다시 그림 (render는 매 프레임 → 마커와 완벽 동기화)
-map.on('render', drawQuakes);
-map.on('resize', function() { resizeCanvas(); drawQuakes(); });
+// rAF 스로틀: 여러 move 이벤트를 프레임당 1회 그리기로 합침
+var rafPending = false;
+function scheduleDraw() {
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(function () { rafPending = false; drawQuakes(); });
+}
+// render(매 프레임) 대신 move/zoom에서만 그림 → 타일 로드 등 불필요한 재그리기 제거
+map.on('move', scheduleDraw);
+map.on('zoom', scheduleDraw);
+map.on('resize', function () { resizeCanvas(); scheduleDraw(); });
+map.on('load', function () { resizeCanvas(); scheduleDraw(); });
 resizeCanvas();
 drawQuakes();
 
