@@ -120,9 +120,21 @@ CLUSTER_INFO = [
     {"name": "높은 위험",  "tone": "danger", "color": "#ff6b6b", "desc": "규모가 크고 진원이 얕은 위험한 지진 패턴입니다."},
 ]
 
+# 위험 점수 모델 파라미터
+# 단순 다수결 대신 "거리가중 심각도 점수"를 사용해 빈도(밀도)와 심각도를 함께 반영한다.
+#   score = Σ ( 군집_심각도 × 거리가중치 ),  거리가중치 = 1 - d/R  (반경 R 안에서 가까울수록 큼)
+# 임계값은 전 지구 그리드 점수 분포의 percentile로 설정 (낮음 ~65%, 높음 ~85%).
+RISK = {
+    "radiusKm": 500.0,
+    "severity": {"0": 2.0, "1": 1.0, "2": 3.0},  # 0=중간, 1=낮음, 2=높음
+    "lowMax": 8.0,    # score < lowMax  → 낮은 위험
+    "highMin": 30.0,  # score >= highMin → 높은 위험
+}
+
 payload = {
     "points": quakes.values.tolist(),  # [[lat, lon, cluster], ...]
     "clusterInfo": CLUSTER_INFO,
+    "risk": RISK,
 }
 payload_json = json.dumps(payload)
 
@@ -407,7 +419,7 @@ body { margin: 0; padding: 0; background: transparent; color: #fff; }
                 <div class="r-label">Seismic Risk Assessment</div>
                 <div class="r-cluster" id="r-cluster">Cluster —</div>
                 <h2 class="r-name" id="r-name">대기 중</h2>
-                <p class="r-desc" id="r-desc">지도에서 지점을 선택하면 반경 ±5° 안의 지진 데이터를 분석해 위험도를 예측합니다.</p>
+                <p class="r-desc" id="r-desc">지도에서 지점을 선택하면 반경 500km 안의 지진 데이터를 거리·심각도 가중으로 분석해 위험도를 예측합니다.</p>
                 <div class="r-stats" id="r-stats" style="display:none;">
                     <div class="r-stat s"><div class="v"><span class="dot"></span><span id="c-safe">0</span></div><div class="l">낮음</div></div>
                     <div class="r-stat w"><div class="v"><span class="dot"></span><span id="c-warn">0</span></div><div class="l">중간</div></div>
@@ -422,9 +434,13 @@ body { margin: 0; padding: 0; background: transparent; color: #fff; }
 var DATA = __PAYLOAD__;
 var POINTS = DATA.points; // [lat, lon, cluster]
 var CLUSTER_INFO = DATA.clusterInfo;
+var RISK = DATA.risk;
 
 // 군집 색 매핑 (노트북: 0=중간, 1=낮음, 2=높음)
 var CLUSTER_COLOR = ['#ffd166', '#6bcf9f', '#ff6b6b'];
+
+// 위험 레벨 → CLUSTER_INFO 인덱스 (0=중간, 1=낮음, 2=높음)
+var LEVEL_TO_INFO = { low: 1, mid: 0, high: 2 };
 
 // MapLibre 초기화 - CartoDB Dark Matter (라벨 적은 다크 베이스맵)
 var map = new maplibregl.Map({
@@ -523,23 +539,42 @@ map.on('load', function() {
 // 사용자 마커
 var userMarker = null;
 
+function haversineKm(lat1, lon1, lat2, lon2) {
+    var R = 6371.0;
+    var tr = Math.PI / 180;
+    var dLat = (lat2 - lat1) * tr;
+    var dLon = (lon2 - lon1) * tr;
+    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * tr) * Math.cos(lat2 * tr) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return 2 * R * Math.asin(Math.sqrt(a));
+}
+
 function predictRisk(lat, lon) {
-    // 반경 ±5° 안의 군집 카운트
+    // 반경 R(km) 안의 지진을 거리가중 심각도로 합산.
+    // 단순 다수결과 달리, 지진이 드문 지역(베트남 등)은 점수 자체가 낮아 '낮은 위험'으로 분류된다.
+    var Rk = RISK.radiusKm;
     var counts = [0, 0, 0];
+    var score = 0;
     for (var i = 0; i < POINTS.length; i++) {
         var plat = POINTS[i][0], plon = POINTS[i][1], pc = POINTS[i][2];
-        if (Math.abs(plat - lat) <= 5 && Math.abs(plon - lon) <= 5) {
-            counts[pc]++;
-        }
+        // 박스로 1차 컷 (성능) 후 정확한 실거리 계산
+        if (Math.abs(plat - lat) > 6 || Math.abs(plon - lon) > 6) continue;
+        var d = haversineKm(lat, lon, plat, plon);
+        if (d > Rk) continue;
+        counts[pc]++;
+        var w = 1 - d / Rk;             // 가까울수록 가중치 큼 (0~1)
+        score += (RISK.severity[String(pc)] || 0) * w;
     }
     var total = counts[0] + counts[1] + counts[2];
-    if (total === 0) return { cluster: -1, counts: counts, total: 0 };
+    if (total === 0) return { level: 'none', counts: counts, total: 0, score: 0 };
 
-    var bestIdx = 0, bestCnt = counts[0];
-    for (var k = 1; k < 3; k++) {
-        if (counts[k] > bestCnt) { bestCnt = counts[k]; bestIdx = k; }
-    }
-    return { cluster: bestIdx, counts: counts, total: total };
+    var level;
+    if (score < RISK.lowMax)        level = 'low';
+    else if (score < RISK.highMin)  level = 'mid';
+    else                            level = 'high';
+
+    return { level: level, counts: counts, total: total, score: score };
 }
 
 function updatePanel(lat, lon) {
@@ -556,16 +591,17 @@ function updatePanel(lat, lon) {
     if (res.total === 0) {
         nameEl.textContent = '데이터 없음';
         nameEl.className = 'r-name';
-        clusterEl.textContent = '반경 ±5° 안 지진 0건';
-        descEl.textContent = '주변에 분석할 지진 데이터가 없습니다. 다른 지점을 선택해보세요.';
+        clusterEl.textContent = '반경 ' + RISK.radiusKm + 'km 안 지진 0건';
+        descEl.textContent = '주변에 분석할 지진 데이터가 없습니다. 지진 활동이 거의 없는 안정 지역입니다.';
         statsEl.style.display = 'none';
         return;
     }
 
-    var info = CLUSTER_INFO[res.cluster];
+    var infoIdx = LEVEL_TO_INFO[res.level];
+    var info = CLUSTER_INFO[infoIdx];
     nameEl.textContent = info.name;
     nameEl.className = 'r-name ' + info.tone;
-    clusterEl.textContent = 'Cluster · ' + res.cluster + ' · 주변 ' + res.total + '건';
+    clusterEl.textContent = '위험점수 ' + res.score.toFixed(1) + ' · 주변 ' + res.total + '건';
     descEl.textContent = info.desc;
 
     statsEl.style.display = 'grid';
