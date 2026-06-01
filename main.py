@@ -580,20 +580,20 @@ function drawQuakes() {
         if (c === 2) cell.c2++; else if (c === 0) cell.c0++; else cell.c1++;
     }
 
-    var baseR = 2 + Math.max(0, z - 1) * 0.9;  // 줌인할수록 점 커짐
+    var baseR = 1.4 + Math.max(0, z - 1) * 0.6;  // 줌인할수록 점 커짐
     for (var k in cells) {
         var cl = cells[k];
         var x = cl.sx / cl.n, y = cl.sy / cl.n;
         // 대표 색: 최다 군집 (동률이면 높은 위험 우선)
         var dom = (cl.c2 >= cl.c1 && cl.c2 >= cl.c0) ? 2 : (cl.c0 >= cl.c1 ? 0 : 1);
         var color = CLUSTER_COLOR[dom];
-        var r = baseR + Math.sqrt(cl.n - 1) * 2.2;  // 점 많을수록 큰 원
-        if (r > 26) r = 26;
+        var r = baseR + Math.sqrt(cl.n - 1) * 1.15;  // 점 많을수록 큰 원
+        if (r > 15) r = 15;
 
         // 저렴한 글로우 (단색 반투명 원)
         qCtx.beginPath();
-        qCtx.arc(x, y, r * 1.9, 0, 6.283185);
-        qCtx.fillStyle = hexToRgba(color, 0.16);
+        qCtx.arc(x, y, r * 1.7, 0, 6.283185);
+        qCtx.fillStyle = hexToRgba(color, 0.14);
         qCtx.fill();
 
         // 코어
@@ -601,14 +601,14 @@ function drawQuakes() {
         qCtx.arc(x, y, r, 0, 6.283185);
         qCtx.fillStyle = color;
         qCtx.fill();
-        qCtx.lineWidth = 0.6;
-        qCtx.strokeStyle = 'rgba(255,255,255,0.5)';
+        qCtx.lineWidth = 0.5;
+        qCtx.strokeStyle = 'rgba(255,255,255,0.45)';
         qCtx.stroke();
 
         // 묶인 개수 표시 (클러스터가 충분히 클 때만)
-        if (cl.n > 1 && r >= 9) {
+        if (cl.n > 1 && r >= 8) {
             qCtx.fillStyle = 'rgba(8,10,14,0.92)';
-            qCtx.font = 'bold ' + Math.round(r * 0.85) + 'px Inter, sans-serif';
+            qCtx.font = 'bold ' + Math.round(r * 0.8) + 'px Inter, sans-serif';
             qCtx.textAlign = 'center';
             qCtx.textBaseline = 'middle';
             qCtx.fillText(cl.n, x, y);
