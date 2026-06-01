@@ -268,8 +268,54 @@ body { margin: 0; padding: 0; background: transparent; color: #fff; }
     line-height: 1.5;
 }
 
-/* Result */
-.result-block {
+/* Toggle switch */
+.toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+}
+.toggle-label {
+    color: rgba(255,255,255,0.7);
+    font-size: 0.74rem;
+    font-weight: 500;
+}
+.toggle {
+    width: 42px;
+    height: 24px;
+    border-radius: 999px;
+    border: none;
+    background: rgba(255,255,255,0.12);
+    position: relative;
+    cursor: pointer;
+    padding: 0;
+    transition: background 0.25s ease;
+    flex-shrink: 0;
+}
+.toggle .knob {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.25s ease;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
+.toggle[aria-checked="true"] {
+    background: #6bcf9f;
+    box-shadow: 0 0 12px rgba(107,207,159,0.5);
+}
+.toggle[aria-checked="true"] .knob {
+    transform: translateX(18px);
+}
+
+
     margin-top: 18px;
     padding: 18px 16px;
     background: rgba(255,255,255,0.025);
@@ -403,6 +449,13 @@ body { margin: 0; padding: 0; background: transparent; color: #fff; }
         <div class="side-content">
             <div class="panel-label" style="padding:0;">Location Input</div>
             <div class="hint">지도를 클릭하거나 위경도를 직접 입력하세요.</div>
+
+            <div class="toggle-row">
+                <span class="toggle-label">실제 지진 데이터 표시</span>
+                <button class="toggle" id="quake-toggle" role="switch" aria-checked="true">
+                    <span class="knob"></span>
+                </button>
+            </div>
 
             <div class="coord-grid">
                 <div class="coord-box">
@@ -629,6 +682,25 @@ map.on('click', function(e) {
 map.on('load', function() {
     setTimeout(function() { placeUserMarker(35.6, 139.7); }, 400);
 });
+
+// 실제 지진 데이터 표시 토글
+(function() {
+    var btn = document.getElementById('quake-toggle');
+    var visible = true;
+    function apply() {
+        var vis = visible ? 'visible' : 'none';
+        ['quakes-glow', 'quakes-core'].forEach(function(id) {
+            if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
+        });
+        btn.setAttribute('aria-checked', visible ? 'true' : 'false');
+    }
+    btn.addEventListener('click', function() {
+        visible = !visible;
+        apply();
+    });
+    // 레이어가 로드된 뒤 초기 상태 동기화
+    map.on('load', function() { setTimeout(apply, 100); });
+})();
 </script>
 
 </body>
