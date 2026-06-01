@@ -188,6 +188,15 @@ body { margin: 0; padding: 0; background: transparent; color: #fff; }
     border-radius: 0 0 20px 20px;
     position: relative;
 }
+/* 지진 점을 직접 그리는 canvas 오버레이 (maplibre 벡터 worker 없이 iframe에서도 항상 렌더링) */
+#quake-canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+    pointer-events: none;
+    z-index: 2;
+    border-radius: 0 0 20px 20px;
+}
 .maplibregl-canvas { outline: none; }
 .maplibregl-ctrl-attrib {
     background: rgba(0,0,0,0.4) !important;
@@ -436,6 +445,7 @@ body { margin: 0; padding: 0; background: transparent; color: #fff; }
     <div class="panel">
         <div class="panel-label">Global Seismic Map · Click anywhere</div>
         <div id="map"></div>
+        <canvas id="quake-canvas"></canvas>
         <div class="legend">
             <div class="legend-title">Cluster Legend</div>
             <div class="legend-row"><span class="swatch" style="background:#6bcf9f;box-shadow:0 0 8px #6bcf9f;"></span> 낮은 위험 (Cluster 1)</div>
@@ -494,16 +504,6 @@ var CLUSTER_COLOR = ['#ffd166', '#6bcf9f', '#ff6b6b'];
 // 위험 레벨 → CLUSTER_INFO 인덱스 (0=중간, 1=낮음, 2=높음)
 var LEVEL_TO_INFO = { low: 1, mid: 0, high: 2 };
 
-// 지진 데이터를 GeoJSON으로 변환 (색상을 미리 계산해 넣어 match 타입 이슈 제거)
-var features = POINTS.map(function(p) {
-    var c = Math.round(p[2]);
-    return {
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: [p[1], p[0]] }, // [lon, lat]
-        properties: { cluster: c, color: CLUSTER_COLOR[c] || '#aaa' }
-    };
-});
-
 // MapLibre 초기화 - CartoDB Dark Matter (라벨 적은 다크 베이스맵)
 var map = new maplibregl.Map({
     container: 'map',
@@ -520,36 +520,10 @@ var map = new maplibregl.Map({
                 ],
                 tileSize: 256,
                 attribution: '© OpenStreetMap contributors © CARTO'
-            },
-            // 지진 데이터를 스타일에 직접 포함 → load 타이밍과 무관하게 항상 렌더링
-            'quakes': {
-                type: 'geojson',
-                data: { type: 'FeatureCollection', features: features }
             }
         },
         layers: [
-            { id: 'carto-dark-layer', type: 'raster', source: 'carto-dark' },
-            // 글로우 후광
-            {
-                id: 'quakes-glow', type: 'circle', source: 'quakes',
-                paint: {
-                    'circle-radius': ['interpolate', ['linear'], ['zoom'], 1, 6, 4, 14, 7, 26],
-                    'circle-color': ['get', 'color'],
-                    'circle-opacity': 0.22,
-                    'circle-blur': 1.0
-                }
-            },
-            // 메인 도트
-            {
-                id: 'quakes-core', type: 'circle', source: 'quakes',
-                paint: {
-                    'circle-radius': ['interpolate', ['linear'], ['zoom'], 1, 3, 4, 5, 7, 7],
-                    'circle-color': ['get', 'color'],
-                    'circle-opacity': 0.95,
-                    'circle-stroke-width': 0.6,
-                    'circle-stroke-color': 'rgba(255,255,255,0.6)'
-                }
-            }
+            { id: 'carto-dark-layer', type: 'raster', source: 'carto-dark' }
         ]
     },
     center: [20, 15],
@@ -560,6 +534,72 @@ var map = new maplibregl.Map({
 });
 
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+
+// ===== 지진 점 canvas 오버레이 =====
+// maplibre 벡터 레이어 대신 canvas에 직접 그린다 (Streamlit iframe에서 worker 차단돼도 항상 렌더링).
+var mapEl = document.getElementById('map');
+var qCanvas = document.getElementById('quake-canvas');
+mapEl.appendChild(qCanvas);                 // #map 안으로 넣어 정확히 겹치게
+var qCtx = qCanvas.getContext('2d');
+var quakesVisible = true;
+
+function resizeCanvas() {
+    var dpr = window.devicePixelRatio || 1;
+    var w = mapEl.clientWidth, h = mapEl.clientHeight;
+    qCanvas.style.width = w + 'px';
+    qCanvas.style.height = h + 'px';
+    qCanvas.width = Math.round(w * dpr);
+    qCanvas.height = Math.round(h * dpr);
+    qCtx.setTransform(dpr, 0, 0, dpr, 0, 0); // CSS 픽셀 좌표로 그리기
+}
+
+function drawQuakes() {
+    var w = mapEl.clientWidth, h = mapEl.clientHeight;
+    qCtx.clearRect(0, 0, w, h);
+    if (!quakesVisible) return;
+
+    var z = map.getZoom();
+    // 줌인할수록 점이 커지고 더 퍼져 보이게: 코어 반경 & 글로우 반경 확대
+    var coreR = 1.6 + Math.max(0, z - 1) * 1.4;   // z=1 → 1.6px, z=8 → 11.4px
+    var glowR = coreR * 2.6;
+    var margin = glowR + 4;
+
+    for (var i = 0; i < POINTS.length; i++) {
+        var lat = POINTS[i][0], lon = POINTS[i][1], c = Math.round(POINTS[i][2]);
+        var pt = map.project([lon, lat]);
+        if (pt.x < -margin || pt.x > w + margin || pt.y < -margin || pt.y > h + margin) continue; // 화면 밖 컬링
+        var color = CLUSTER_COLOR[c] || '#aaa';
+
+        // 글로우
+        var g = qCtx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, glowR);
+        g.addColorStop(0, hexToRgba(color, 0.35));
+        g.addColorStop(1, hexToRgba(color, 0));
+        qCtx.fillStyle = g;
+        qCtx.beginPath();
+        qCtx.arc(pt.x, pt.y, glowR, 0, Math.PI * 2);
+        qCtx.fill();
+
+        // 코어 도트
+        qCtx.beginPath();
+        qCtx.arc(pt.x, pt.y, coreR, 0, Math.PI * 2);
+        qCtx.fillStyle = color;
+        qCtx.fill();
+        qCtx.lineWidth = Math.max(0.5, coreR * 0.18);
+        qCtx.strokeStyle = 'rgba(255,255,255,0.55)';
+        qCtx.stroke();
+    }
+}
+
+function hexToRgba(hex, a) {
+    var n = parseInt(hex.slice(1), 16);
+    return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+
+// 지도 움직임/줌마다 다시 그림 (render는 매 프레임 → 마커와 완벽 동기화)
+map.on('render', drawQuakes);
+map.on('resize', function() { resizeCanvas(); drawQuakes(); });
+resizeCanvas();
+drawQuakes();
 
 // 사용자 마커
 var userMarker = null;
@@ -655,17 +695,13 @@ map.on('load', function() {
     setTimeout(function() { placeUserMarker(35.6, 139.7); }, 400);
 });
 
-// 실제 지진 데이터 표시 토글 (레이어는 style에 항상 존재)
+// 실제 지진 데이터 표시 토글 (canvas 오버레이 on/off)
 (function() {
     var btn = document.getElementById('quake-toggle');
-    var visible = true;
     btn.addEventListener('click', function() {
-        visible = !visible;
-        var vis = visible ? 'visible' : 'none';
-        ['quakes-glow', 'quakes-core'].forEach(function(id) {
-            if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
-        });
-        btn.setAttribute('aria-checked', visible ? 'true' : 'false');
+        quakesVisible = !quakesVisible;
+        btn.setAttribute('aria-checked', quakesVisible ? 'true' : 'false');
+        drawQuakes();
     });
 })();
 </script>
