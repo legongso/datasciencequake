@@ -132,7 +132,9 @@ RISK = {
 }
 
 payload = {
-    "points": quakes.values.tolist(),  # [[lat, lon, cluster], ...]
+    # [[lat, lon, cluster_int], ...]  — cluster를 명시적으로 int로 변환
+    # (quakes.values는 lat/lon이 float이라 cluster까지 float로 오염됨 → match/색상 깨짐)
+    "points": [[float(la), float(lo), int(c)] for la, lo, c in quakes.values.tolist()],
     "clusterInfo": CLUSTER_INFO,
     "risk": RISK,
 }
@@ -223,7 +225,7 @@ body { margin: 0; padding: 0; background: transparent; color: #fff; }
     display: flex;
     flex-direction: column;
     height: 100%;
-    overflow: hidden;
+    overflow-y: auto;
 }
 .side-section { margin-top: 14px; }
 .section-title {
@@ -528,22 +530,24 @@ var map = new maplibregl.Map({
 
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
 
-// 지진 데이터를 GeoJSON으로 변환
+// 지진 데이터를 GeoJSON으로 변환 (색상을 미리 계산해 넣어 match 타입 이슈 제거)
 var features = POINTS.map(function(p) {
+    var c = Math.round(p[2]);  // 혹시 모를 float 방어
     return {
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [p[1], p[0]] }, // [lon, lat]
-        properties: { cluster: p[2] }
+        properties: { cluster: c, color: CLUSTER_COLOR[c] || '#aaa' }
     };
 });
 
-map.on('load', function() {
+function addQuakeLayers() {
+    if (map.getSource('quakes')) return;  // 중복 방지
     map.addSource('quakes', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: features }
     });
 
-    // 글로우 후광 레이어 (블러된 큰 원)
+    // 글로우 후광 레이어
     map.addLayer({
         id: 'quakes-glow',
         type: 'circle',
@@ -551,17 +555,11 @@ map.on('load', function() {
         paint: {
             'circle-radius': [
                 'interpolate', ['linear'], ['zoom'],
-                1, 4, 4, 10, 7, 22
+                1, 6, 4, 14, 7, 26
             ],
-            'circle-color': [
-                'match', ['get', 'cluster'],
-                0, '#ffd166',
-                1, '#6bcf9f',
-                2, '#ff6b6b',
-                '#888'
-            ],
-            'circle-opacity': 0.18,
-            'circle-blur': 1.2
+            'circle-color': ['get', 'color'],
+            'circle-opacity': 0.22,
+            'circle-blur': 1.0
         }
     });
 
@@ -573,21 +571,22 @@ map.on('load', function() {
         paint: {
             'circle-radius': [
                 'interpolate', ['linear'], ['zoom'],
-                1, 1.5, 4, 3, 7, 5
+                1, 3, 4, 5, 7, 7
             ],
-            'circle-color': [
-                'match', ['get', 'cluster'],
-                0, '#ffd166',
-                1, '#6bcf9f',
-                2, '#ff6b6b',
-                '#aaa'
-            ],
+            'circle-color': ['get', 'color'],
             'circle-opacity': 0.95,
-            'circle-stroke-width': 0.5,
-            'circle-stroke-color': 'rgba(255,255,255,0.5)'
+            'circle-stroke-width': 0.6,
+            'circle-stroke-color': 'rgba(255,255,255,0.6)'
         }
     });
-});
+}
+
+// 스타일이 이미 로드됐으면 즉시, 아니면 load 시점에 추가 (둘 다 대비)
+if (map.isStyleLoaded()) {
+    addQuakeLayers();
+} else {
+    map.on('load', addQuakeLayers);
+}
 
 // 사용자 마커
 var userMarker = null;
@@ -699,7 +698,8 @@ map.on('load', function() {
         apply();
     });
     // 레이어가 로드된 뒤 초기 상태 동기화
-    map.on('load', function() { setTimeout(apply, 100); });
+    if (map.isStyleLoaded()) { setTimeout(apply, 100); }
+    else { map.on('load', function() { setTimeout(apply, 100); }); }
 })();
 </script>
 
